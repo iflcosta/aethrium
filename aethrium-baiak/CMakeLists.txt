@@ -1,0 +1,209 @@
+cmake_minimum_required(VERSION 3.19)
+
+set(CMAKE_DISABLE_SOURCE_CHANGES ON)
+set(CMAKE_DISABLE_IN_SOURCE_BUILD ON)
+
+# Ensure to pick up the default triplet from the environment if any. This helps
+# driving the vcpkg triplet in the same way either when starting vcpkg directly,
+# or when letting CMake start vcpkg at configure/generate time.
+# Note: this logic must happen before PROJECT command.
+if (DEFINED ENV{VCPKG_DEFAULT_TRIPLET} AND NOT DEFINED VCPKG_TARGET_TRIPLET)
+    set(VCPKG_TARGET_TRIPLET "$ENV{VCPKG_DEFAULT_TRIPLET}" CACHE STRING "The vcpkg triplet")
+endif()
+
+set(BOOST_REQUIRED_VERSION 1.71.0)
+
+option(HTTP "Enable HTTP support" ON)
+if (HTTP)
+    list(APPEND VCPKG_MANIFEST_FEATURES "http")
+    set(BOOST_REQUIRED_VERSION 1.75.0)
+endif()
+
+option(BUILD_TESTING "Build unit tests" OFF)
+if (BUILD_TESTING)
+    list(APPEND VCPKG_MANIFEST_FEATURES "unit-tests")
+endif()
+
+option(USE_LUAJIT "Use LuaJIT" OFF)
+if (USE_LUAJIT)
+    list(APPEND VCPKG_MANIFEST_FEATURES "luajit")
+else()
+    list(APPEND VCPKG_MANIFEST_FEATURES "lua")
+endif()
+
+project(tfs CXX)
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
+# Strict warnings only for our sources, not for dependencies
+if (NOT WIN32)
+    add_compile_options(-Wall -Wextra -Wnon-virtual-dtor -pedantic -Werror -pipe -fvisibility=hidden)
+    add_compile_options(-Wno-error=old-style-cast)
+endif ()
+
+if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+    add_compile_options(-fno-strict-aliasing)
+endif ()
+
+if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
+    add_compile_options(-Wimplicit-fallthrough -Wmove)
+endif ()
+
+# Find packages.
+find_package(OpenSSL 3.0.0 REQUIRED COMPONENTS Crypto)
+find_package(ZLIB REQUIRED)
+find_package(absl CONFIG REQUIRED)
+
+find_package(fmt 8.1.1 CONFIG)
+find_package(spdlog CONFIG REQUIRED)
+if (NOT fmt_FOUND)
+    find_package(fmt 8.1.1 REQUIRED)
+endif()
+
+# Look for vcpkg-provided libmariadb first
+# If we link to the file directly, we might miss its dependencies from vcpkg
+find_package(unofficial-libmariadb CONFIG)
+if (unofficial-libmariadb_FOUND)
+    set(MYSQL_CLIENT_LIBS "unofficial::libmariadb")
+else ()
+    find_package(MySQL REQUIRED)
+endif ()
+
+find_package(Threads REQUIRED)
+find_package(PugiXML CONFIG REQUIRED)
+
+# Selects LuaJIT if user defines or auto-detected
+if (USE_LUAJIT)
+    find_package(LuaJIT REQUIRED)
+else ()
+    find_package(Lua "5.4" REQUIRED)
+endif ()
+
+if (APPLE)
+    find_package(Iconv REQUIRED)
+endif()
+
+# Force UTF-8 support in MSVC (Visual Studio/VSCode on Windows)
+if(MSVC)
+  add_compile_options(/utf-8)
+endif()
+
+set(BOOST_REQUIRED_COMPONENTS system iostreams locale)
+if (HTTP)
+    list(APPEND BOOST_REQUIRED_COMPONENTS json)
+endif ()
+if (BUILD_TESTING)
+    list(APPEND BOOST_REQUIRED_COMPONENTS unit_test_framework)
+endif ()
+find_package(Boost ${BOOST_REQUIRED_VERSION} REQUIRED COMPONENTS ${BOOST_REQUIRED_COMPONENTS})
+
+if (NOT DEFINED DISABLE_STATS OR NOT DISABLE_STATS)
+    message(STATUS "OTS stats enabled. Run 'cmake -DDISABLE_STATS=1 ..' to disable")
+    ADD_DEFINITIONS(-DSTATS_ENABLED)
+else ()
+    message(STATUS "OTS stats disabled. Run 'cmake -DDISABLE_STATS=0 ..' to enable")
+    ADD_DEFINITIONS(-USTATS_ENABLED)
+endif ()
+
+include_directories(${Boost_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR} ${LUA_INCLUDE_DIR} ${MYSQL_INCLUDE_DIR} ${PUGIXML_INCLUDE_DIR})
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+### LINUX RELEASE OPTIMIZATIONS ###
+if (NOT WIN32)
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -mtune=native -flto -fomit-frame-pointer -DNDEBUG")
+    set(CMAKE_C_FLAGS_RELEASE "-O3 -march=native -mtune=native -flto -fomit-frame-pointer -DNDEBUG")
+    set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-flto -fuse-linker-plugin")
+
+    # Profile-Guided Optimization (2 steps)
+    # Step 1: cmake -DCMAKE_BUILD_TYPE=Release -DPGO_GENERATE=ON ..
+    # Step 2: run server under load, then: cmake -DCMAKE_BUILD_TYPE=Release -DPGO_USE=ON ..
+    option(PGO_GENERATE "Generate PGO profile data" OFF)
+    option(PGO_USE "Use PGO profile data" OFF)
+    if (PGO_GENERATE)
+        add_compile_options(-fprofile-generate)
+        add_link_options(-fprofile-generate)
+    elseif (PGO_USE)
+        add_compile_options(-fprofile-use -fprofile-correction)
+        add_link_options(-fprofile-use)
+    endif()
+endif()
+### END LINUX RELEASE OPTIMIZATIONS ###
+
+### MIMALLOC ALLOCATOR ###
+option(USE_MIMALLOC "Use mimalloc allocator for better performance on Linux" OFF)
+if (USE_MIMALLOC AND NOT WIN32)
+    find_package(mimalloc CONFIG)
+    if (mimalloc_FOUND)
+        message(STATUS "mimalloc found - using as memory allocator")
+    else()
+        find_library(MIMALLOC_LIB mimalloc)
+        if (MIMALLOC_LIB)
+            message(STATUS "mimalloc found at ${MIMALLOC_LIB}")
+        else()
+            message(WARNING "mimalloc not found. Install with: sudo apt install libmimalloc-dev")
+            set(USE_MIMALLOC OFF)
+        endif()
+    endif()
+endif()
+### END MIMALLOC ###
+
+### SLOW TASK DETECTION ###
+option(ENABLE_SLOW_TASK_DETECTION "Enable slow task detection logging (adds overhead)" ON)
+if (ENABLE_SLOW_TASK_DETECTION)
+    ADD_DEFINITIONS(-DSLOW_TASK_DETECTION)
+    message(STATUS "Slow task detection enabled. Disable for production: -DENABLE_SLOW_TASK_DETECTION=OFF")
+endif()
+### END SLOW TASK DETECTION ###
+
+if (BUILD_TESTING)
+    message(STATUS "Building unit tests")
+    enable_testing()
+endif()
+
+# Option to disable unity builds
+option(ENABLE_UNITY_BUILD "Enable unity build" ON)
+
+add_subdirectory(src)
+
+add_executable(tfs ${tfs_MAIN})
+target_link_libraries(tfs tfslib ZLIB::ZLIB OpenSSL::Crypto absl::flat_hash_map)
+
+# Link mimalloc if enabled
+if (USE_MIMALLOC AND NOT WIN32)
+    if (mimalloc_FOUND)
+        target_link_libraries(tfs mimalloc)
+    elseif (MIMALLOC_LIB)
+        target_link_libraries(tfs ${MIMALLOC_LIB})
+    endif()
+endif()
+
+target_include_directories(tfs PUBLIC)
+
+### INTERPROCEDURAL OPTIMIZATION ###
+include(CheckIPOSupported)
+check_ipo_supported(RESULT result OUTPUT error)
+if (result)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+else ()
+    message(STATUS "IPO is not supported: ${error}")
+endif ()
+### END INTERPROCEDURAL OPTIMIZATION ###
+
+### Git Version ###
+# Define the two required variables before including
+# the source code for watching a git repository.
+option(SKIP_GIT "Skip checking for git updates" OFF)
+if(NOT SKIP_GIT)
+    set(PRE_CONFIGURE_FILE "cmake/gitmetadata.h.in")
+    set(POST_CONFIGURE_FILE "${CMAKE_CURRENT_BINARY_DIR}/gitmetadata.h")
+    include(git_watcher)
+    if(Git_FOUND)
+        add_dependencies(tfs check_git)
+        target_include_directories(tfs PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+    endif()
+endif()
+### END Git Version ###
+
+target_precompile_headers(tfs PUBLIC src/otpch.h)

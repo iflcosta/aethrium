@@ -1,0 +1,331 @@
+// Copyright 2023 The Forgotten Server Authors. All rights reserved.
+// Use of this source code is governed by the GPL-2.0 License that can be found in the LICENSE file.
+
+#include "otpch.h"
+
+#include "database.h"
+#include "stats.h"
+
+#include "configmanager.h"
+
+#include <mysql/errmsg.h>
+#include "logger.h"
+#include <fmt/format.h>
+
+static constexpr int MAX_RECONNECT_ATTEMPTS = 10;
+static constexpr unsigned int MYSQL_TIMEOUT_SECONDS = 30;
+
+static tfs::detail::Mysql_ptr connectToDatabase(const bool retryIfError)
+{
+	for (int retryCount = 0; ; ++retryCount) {
+		if (retryCount > 0) {
+			if (!retryIfError || retryCount > MAX_RECONNECT_ATTEMPTS) {
+				if (retryIfError) {
+					LOG_ERROR(fmt::format("[Database] Failed to connect after {} attempts. Giving up.", MAX_RECONNECT_ATTEMPTS));
+				}
+				return nullptr;
+			}
+			std::this_thread::sleep_for(std::chrono::seconds(1));
+		}
+
+		tfs::detail::Mysql_ptr handle{mysql_init(nullptr)};
+		if (!handle) {
+			LOG_ERROR("Failed to initialize MySQL connection handle.");
+			continue;
+		}
+
+		// Set query timeouts to prevent hanging
+		{
+			unsigned int readTimeout = MYSQL_TIMEOUT_SECONDS;
+			unsigned int writeTimeout = MYSQL_TIMEOUT_SECONDS;
+			mysql_options(handle.get(), MYSQL_OPT_READ_TIMEOUT, &readTimeout);
+			mysql_options(handle.get(), MYSQL_OPT_WRITE_TIMEOUT, &writeTimeout);
+		}
+
+		// Disable SSL enforcement and verification
+#if defined(_WIN32)
+		{
+			bool ssl_enforce = false;
+			bool ssl_verify = false;
+			mysql_options(handle.get(), MYSQL_OPT_SSL_ENFORCE, &ssl_enforce);
+			mysql_options(handle.get(), MYSQL_OPT_SSL_VERIFY_SERVER_CERT, &ssl_verify);
+		}
+#else
+		{
+			unsigned int ssl_mode = SSL_MODE_DISABLED;
+			mysql_options(handle.get(), MYSQL_OPT_SSL_MODE, &ssl_mode);
+		}
+#endif
+
+		// connects to database
+		if (!mysql_real_connect(handle.get(), getString(ConfigManager::MYSQL_HOST).data(),
+		                        getString(ConfigManager::MYSQL_USER).data(), getString(ConfigManager::MYSQL_PASS).data(),
+		                        getString(ConfigManager::MYSQL_DB).data(), getInteger(ConfigManager::SQL_PORT),
+		                        getString(ConfigManager::MYSQL_SOCK).data(), 0)) {
+			LOG_ERROR(fmt::format("MySQL Error Message: {}", mysql_error(handle.get())));
+			continue;
+		}
+		return handle;
+	}
+}
+
+static bool isLostConnectionError(const unsigned error)
+{
+	return error == CR_SERVER_LOST || error == CR_SERVER_GONE_ERROR || error == CR_CONN_HOST_ERROR ||
+	       error == 1053 /*ER_SERVER_SHUTDOWN*/ || error == CR_CONNECTION_ERROR;
+}
+
+static bool executeQuery(tfs::detail::Mysql_ptr& handle, std::string_view query, const bool retryIfLostConnection)
+{
+	int retryCount = 0;
+	while (mysql_real_query(handle.get(), query.data(), query.length()) != 0) {
+		LOG_ERROR(fmt::format("[Error - mysql_real_query] Query: {}\nMessage: {}", query.substr(0, 256), mysql_error(handle.get())));
+		const unsigned error = mysql_errno(handle.get());
+		if (!isLostConnectionError(error) || !retryIfLostConnection) {
+			return false;
+		}
+		if (++retryCount >= MAX_RECONNECT_ATTEMPTS) {
+			LOG_ERROR(fmt::format("[Database] Query retry limit ({}) reached. Aborting query.", MAX_RECONNECT_ATTEMPTS));
+			return false;
+		}
+		handle = connectToDatabase(true);
+		if (!handle) {
+			LOG_ERROR("[Database] Reconnection failed during query retry.");
+			return false;
+		}
+	}
+	return true;
+}
+
+bool Database::connect()
+{
+	auto newHandle = connectToDatabase(false);
+	if (!newHandle) {
+		return false;
+	}
+
+	handle = std::move(newHandle);
+	DBResult_ptr result = storeQuery("SHOW VARIABLES LIKE 'max_allowed_packet'");
+	if (result) {
+		maxPacketSize = result->getNumber<uint64_t>("Value");
+	}
+	return true;
+}
+
+void Database::shutdown()
+{
+    Database& db = getInstance();
+    db.handle.reset();
+    mysql_library_end();
+}
+
+bool Database::beginTransaction()
+{
+	transactionLock = std::unique_lock(databaseLock);
+	const bool result = executeQuery("START TRANSACTION");
+	retryQueries = !result;
+	if (!result) {
+		transactionLock.unlock();
+	}
+	return result;
+}
+
+bool Database::rollback()
+{
+	const bool result = executeQuery("ROLLBACK");
+	retryQueries = true;
+	transactionLock.unlock();
+	return result;
+}
+
+bool Database::commit()
+{
+	const bool result = executeQuery("COMMIT");
+	retryQueries = true;
+	transactionLock.unlock();
+	return result;
+}
+
+bool Database::executeQuery(std::string_view query)
+{
+	std::scoped_lock lockGuard(databaseLock);
+#ifdef STATS_ENABLED
+	std::chrono::high_resolution_clock::time_point time_point = std::chrono::high_resolution_clock::now();
+#endif
+	auto success = ::executeQuery(handle, query, retryQueries);
+
+	// executeQuery can be called with command that produces result (e.g. SELECT)
+	// we have to store that result, even though we do not need it, otherwise handle will get blocked
+	auto mysql_res = mysql_store_result(handle.get());
+	mysql_free_result(mysql_res);
+
+#ifdef STATS_ENABLED
+	uint64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now() - time_point).count();
+	g_stats.addSqlStats(std::make_unique<Stat>(ns, std::string(query.substr(0, 100)), std::string(query.substr(0, 256))));
+#endif
+
+	return success;
+}
+
+DBResult_ptr Database::storeQuery(std::string_view query)
+{
+	std::scoped_lock lockGuard(databaseLock);
+
+#ifdef STATS_ENABLED
+	std::chrono::high_resolution_clock::time_point time_point = std::chrono::high_resolution_clock::now();
+#endif
+	tfs::detail::MysqlResult_ptr res;
+	while (true) {
+		if (!::executeQuery(handle, query, retryQueries) && !retryQueries) {
+			return nullptr;
+		}
+
+		// we should call that every time as someone would call executeQuery('SELECT...')
+		// as it is described in MySQL manual: "it doesn't hurt" :P
+		res.reset(mysql_store_result(handle.get()));
+
+		if (res) {
+			break;
+		}
+
+		LOG_ERROR(fmt::format("[Error - mysql_store_result] Query: {}\nMessage: {}", query, mysql_error(handle.get())));
+		const unsigned error = mysql_errno(handle.get());
+		if (!isLostConnectionError(error) || !retryQueries) {
+			return nullptr;
+		}
+	}
+
+#ifdef STATS_ENABLED
+	uint64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now() - time_point).count();
+	g_stats.addSqlStats(std::make_unique<Stat>(ns, std::string(query.substr(0, 100)), std::string(query.substr(0, 256))));
+#endif
+	
+	// retrieving results of query
+	DBResult_ptr result = std::make_shared<DBResult>(std::move(res));
+	if (!result->hasNext()) {
+		return nullptr;
+	}
+	return result;
+}
+
+std::string Database::escapeString(std::string_view s) const { return escapeBlob(s.data(), s.length()); }
+
+std::string Database::escapeBlob(const char* s, uint32_t length) const
+{
+	// the worst case is 2n + 1
+	size_t maxLength = (length * 2) + 1;
+
+	std::string escaped;
+	escaped.reserve(maxLength + 2);
+	escaped.push_back('\'');
+
+	if (length != 0) {
+		std::vector<char> output(maxLength);
+		mysql_real_escape_string(handle.get(), output.data(), s, length);
+		escaped.append(output.data());
+	}
+
+	escaped.push_back('\'');
+	return escaped;
+}
+
+DBResult::DBResult(tfs::detail::MysqlResult_ptr&& res) : handle{std::move(res)}
+{
+	size_t i = 0;
+
+	MYSQL_FIELD* field = mysql_fetch_field(handle.get());
+	while (field) {
+		listNames[field->name] = i++;
+		field = mysql_fetch_field(handle.get());
+	}
+
+	row = mysql_fetch_row(handle.get());
+}
+
+std::string_view DBResult::getString(std::string_view column) const
+{
+	auto it = listNames.find(column);
+	if (it == listNames.end()) {
+		LOG_ERROR(fmt::format("[Error - DBResult::getString] Column '{}' does not exist in result set.", column));
+		return {};
+	}
+
+	if (!row[it->second]) {
+		return {};
+	}
+
+	auto size = mysql_fetch_lengths(handle.get())[it->second];
+	return {row[it->second], size};
+}
+
+std::string_view DBResult::getStream(std::string_view column, unsigned long& size) const
+{
+	auto it = listNames.find(column);
+	if (it == listNames.end()) {
+		LOG_ERROR(fmt::format("[Error - DBResult::getStream] Column '{}' doesn't exist in the result set", column));
+		size = 0;
+		return {};
+	}
+
+	if (row[it->second] == nullptr) {
+		size = 0;
+		return {};
+	}
+
+	size = mysql_fetch_lengths(handle.get())[it->second];
+	return row[it->second];
+}
+
+bool DBResult::hasNext() const { return row != nullptr; }
+
+bool DBResult::next()
+{
+	row = mysql_fetch_row(handle.get());
+	return row != nullptr;
+}
+
+DBInsert::DBInsert(std::string_view query) : query{query} { this->length = this->query.length(); }
+
+bool DBInsert::addRow(std::string_view row)
+{
+	// adds new row to buffer
+	const size_t rowLength = row.length();
+	length += rowLength;
+	if (length > Database::getInstance().getMaxPacketSize() && !execute()) {
+		return false;
+	}
+
+	if (values.empty()) {
+		values.reserve(rowLength + 2);
+		values.push_back('(');
+		values.append(row);
+		values.push_back(')');
+	} else {
+		values.reserve(values.length() + rowLength + 3);
+		values.push_back(',');
+		values.push_back('(');
+		values.append(row);
+		values.push_back(')');
+	}
+	return true;
+}
+
+bool DBInsert::addRow(std::ostringstream& row)
+{
+	bool ret = addRow(row.str());
+	row.str(std::string());
+	return ret;
+}
+
+bool DBInsert::execute()
+{
+	if (values.empty()) {
+		return true;
+	}
+
+	// executes buffer
+	bool res = Database::getInstance().executeQuery(query + values);
+	values.clear();
+	length = query.length();
+	return res;
+}

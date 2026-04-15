@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<npc name="Armeiro" script="addon.lua" walkinterval="2000" floorchange="0">
+	<health now="100" max="100" />
+	<look type="140" head="95" body="116" legs="121" feet="115" addons="3" />
+	<parameters>
+		<parameter key="message_greet" value="Ola |PLAYERNAME|! Sou o armeiro. Posso adicionar addons em suas outfits em troca de itens. Diga {addons} para ver o que eu troco!" />
+		<parameter key="message_farewell" value="Até mais, guerreiro!" />
+		<parameter name="message_walkaway" value="Até mais!" />
+	</parameters>
+</npc>

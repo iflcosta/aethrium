@@ -1,0 +1,23 @@
+# Anti-Rollback GDB Configuration
+# On crash: prints full backtrace, saves all players at temple, then exits.
+# Usage: gdb --batch -return-child-result --command=gdb_config --args ./tfs
+
+set $_exitcode = 999
+set print thread-events off
+handle SIGPIPE nostop noprint pass
+run
+
+if $_exitcode == 999
+    printf "\n=== SERVER CRASH DETECTED ===\n"
+    printf "Timestamp: "
+    shell date "+%Y-%m-%d %H:%M:%S"
+    printf "\n--- Backtrace (all threads) ---\n"
+    thread apply all bt full
+
+    printf "\n--- Emergency Save (Anti-Rollback) ---\n"
+    call (void)saveServer()
+    printf "Anti-rollback save completed. Players sent to temple.\n"
+    printf "=== END CRASH REPORT ===\n\n"
+end
+
+quit $_exitcode
