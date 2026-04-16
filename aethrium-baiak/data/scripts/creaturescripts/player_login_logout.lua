@@ -17,6 +17,11 @@ function loginMessage.onLogin(player)
     local level = player:getLevel()
 
     logger.info("%s%s has logged in.%s [Lvl: %d] [Voc: %s] [IP: %s]", prevColor, player:getName(), resetColor, level, vocation, ipStr)
+    
+    -- Aetherite System Initialization
+    if AetheriteSystem then
+        AetheriteSystem.loadPlayer(player)
+    end
 
     local rewardChest = player:getRewardChest()
     local rewardContainerCount = 0
@@ -96,6 +101,12 @@ function logoutMessage.onLogout(player)
     local level = player:getLevel()
 
     logger.info("%s%s has logged out.%s [Lvl: %d] [Voc: %s] [IP: %s]", prevColor, player:getName(), resetColor, level, vocation, ipStr)
+    
+    -- Aetherite System Save
+    if AetheriteSystem then
+        AetheriteSystem.savePlayer(player)
+    end
+
     local playerId = player:getId()
     nextUseStaminaTime[playerId] = nil
     if Game.getStorageValue(GlobalStorageKeys.workbenchOwner) == playerId then

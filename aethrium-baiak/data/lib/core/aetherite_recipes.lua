@@ -86,5 +86,12 @@ AetheriteRecipes = {
 
 -- Helper function to get all recipes (Universal Crafting)
 function AetheriteRecipes.getAll()
-    return AetheriteRecipes.items
+    local result = {}
+    for id, recipe in pairs(AetheriteRecipes.items) do
+        local copy = {}
+        for k, v in pairs(recipe) do copy[k] = v end
+        copy.id = id -- Store original ID
+        table.insert(result, copy)
+    end
+    return result
 end

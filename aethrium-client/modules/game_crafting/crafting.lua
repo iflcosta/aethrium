@@ -177,14 +177,15 @@ function updateRecipes(recipes)
     
     list:destroyChildren()
 
-    for id, recipe in pairs(recipes) do
+    for _, recipe in ipairs(recipes) do
+        local id = recipe.id
         local widget = g_ui.createWidget('RecipeItem', list)
         widget:setId('recipe_' .. id)
         
         widget:getChildById('itemDisplay'):setItemId(recipe.resultId)
         widget:getChildById('name'):setText(recipe.name)
         
-        local desc = string.format("Ouro: %dk | Sólida: %d", (recipe.gold / 1000), recipe.ingredients[1].count)
+        local desc = string.format("Ouro: %dk | Slida: %d", (recipe.gold / 1000), recipe.ingredients[1].count)
         if recipe.tier == 3 then
             desc = desc .. " | + Essence"
         end

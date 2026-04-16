@@ -24,3 +24,6 @@ dofile('data/lib/core/hunt_system.lua')
 
 -- Boss Room System
 dofile('data/lib/core/boss_room.lua')
+
+-- Aetherite Crafting System
+dofile('data/lib/core/aetherite_lib.lua')

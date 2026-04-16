@@ -3,9 +3,7 @@
     Phase 1-4: Core Library & Crafting Engine
     Developer: Antigravity (Senior AI Coding Assistant)
 
-    DEPENDENCIES: 
-    - SQL table 'player_aetherite_mastery'
-    - data/lib/core/aetherite_recipes.lua
+    FIX: Using Global GUID cache instead of Metadata
 ]]--
 
 -- Load Recipes
@@ -16,6 +14,9 @@ AetheriteSystem.SKILL_COLETA = 1
 AetheriteSystem.SKILL_REFINO = 2
 AetheriteSystem.SKILL_CRAFTING = 3
 
+-- Global Cache for Session Data
+AetheriteSystem.playerData = {}
+
 -- XP Constants
 AetheriteSystem.RATE_P1 = 1.8
 AetheriteSystem.RATE_P2 = 1.2
@@ -25,25 +26,22 @@ AetheriteSystem.CAP_P1 = 999
 AetheriteSystem.CAP_P2 = 60
 AetheriteSystem.CAP_P3 = 30
 
--- Session Cache (Fallback for missing setMetadata)
-AetheriteSystem.playersData = {}
-
 -- DB Schema Helpers
 function AetheriteSystem.loadPlayer(player)
     local guid = player:getGuid()
     local resultId = db.storeQuery(string.format("SELECT * FROM `player_aetherite_mastery` WHERE `player_id` = %d", guid))
     
     local data = {
-        [AetheriteSystem.SKILL_COLETA] = { xp = 0, lvl = 1, priority = 1, id = 1 },
-        [AetheriteSystem.SKILL_REFINO] = { xp = 0, lvl = 1, priority = 2, id = 2 },
-        [AetheriteSystem.SKILL_CRAFTING] = { xp = 0, lvl = 1, priority = 3, id = 3 },
+        [AetheriteSystem.SKILL_COLETA] = { xp = 0, lvl = 1, priority = 1 },
+        [AetheriteSystem.SKILL_REFINO] = { xp = 0, lvl = 1, priority = 2 },
+        [AetheriteSystem.SKILL_CRAFTING] = { xp = 0, lvl = 1, priority = 3 },
         dust = 0
     }
 
     if resultId ~= false then
         data[1].xp = result.getNumber(resultId, "coleta_xp")
         data[2].xp = result.getNumber(resultId, "refino_xp")
-        data[3].xp = result.getNumber(resultId, "crafting_xp")
+        data[3].xp = result.getNumber(resultId, "craft_xp")
         
         data[1].priority = result.getNumber(resultId, "p1")
         data[2].priority = result.getNumber(resultId, "p2")
@@ -58,20 +56,21 @@ function AetheriteSystem.loadPlayer(player)
 
     -- Calculate levels from XP
     for i = 1, 3 do
+        data[i].id = i
         data[i].lvl = AetheriteSystem.xpToLevel(data[i].xp)
     end
 
-    AetheriteSystem.playersData[guid] = data
+    AetheriteSystem.playerData[guid] = data
 end
 
 function AetheriteSystem.savePlayer(player)
     local guid = player:getGuid()
-    local data = AetheriteSystem.playersData[guid]
+    local data = AetheriteSystem.playerData[guid]
     if not data then return end
 
     local query = string.format([[
         UPDATE `player_aetherite_mastery` SET 
-        `coleta_xp` = %d, `refino_xp` = %d, `crafting_xp` = %d,
+        `coleta_xp` = %d, `refino_xp` = %d, `craft_xp` = %d,
         `p1` = %d, `p2` = %d, `p3` = %d,
         `aetherite_dust` = %d
         WHERE `player_id` = %d]],
@@ -90,31 +89,47 @@ end
 
 function AetheriteSystem.levelToXp(level)
     if level <= 1 then return 0 end
-    return math.pow(level - 1, 2) * 100
+    return ((level - 1) ^ 2) * 100
 end
 
 -- GETTERS / SETTERS
 function AetheriteSystem.getLevel(player, skillId)
-    local data = AetheriteSystem.playersData[player:getGuid()]
+    local guid = player:getGuid()
+    local data = AetheriteSystem.playerData[guid]
+    if not data then 
+        AetheriteSystem.loadPlayer(player)
+        data = AetheriteSystem.playerData[guid]
+    end
     return data and data[skillId].lvl or 1
 end
 
 function AetheriteSystem.getDust(player)
-    local data = AetheriteSystem.playersData[player:getGuid()]
+    local guid = player:getGuid()
+    local data = AetheriteSystem.playerData[guid]
+    if not data then 
+        AetheriteSystem.loadPlayer(player)
+        data = AetheriteSystem.playerData[guid]
+    end
     return data and data.dust or 0
 end
 
 function AetheriteSystem.addDust(player, amount)
-    local data = AetheriteSystem.playersData[player:getGuid()]
+    local guid = player:getGuid()
+    local data = AetheriteSystem.playerData[guid]
     if data then
         data.dust = math.max(0, data.dust + amount)
+        AetheriteSystem.savePlayer(player)
     end
 end
 
 -- XP LOGIC
 function AetheriteSystem.addXP(player, skillId, amount)
-    local data = AetheriteSystem.playersData[player:getGuid()]
-    if not data then return end
+    local guid = player:getGuid()
+    local data = AetheriteSystem.playerData[guid]
+    if not data then 
+        AetheriteSystem.loadPlayer(player)
+        data = AetheriteSystem.playerData[guid]
+    end
 
     local skill = data[skillId]
     local priority = skill.priority
@@ -140,11 +155,14 @@ function AetheriteSystem.addXP(player, skillId, amount)
         player:sendTextMessage(MESSAGE_EVENT_ADVANCE, string.format("Voc avanou no nvel de Mestria de Aetherita (%d)! Nvel atual: %d", skillId, skill.lvl))
         player:getPosition():sendMagicEffect(CONST_ME_MAGIC_BLUE)
     end
+    
+    AetheriteSystem.savePlayer(player)
 end
 
 -- PRIORITY SYSTEM
 function AetheriteSystem.setPriority(player, skillId, newPriority)
-    local data = AetheriteSystem.playersData[player:getGuid()]
+    local guid = player:getGuid()
+    local data = AetheriteSystem.playerData[guid]
     if not data then return end
 
     -- Swap logic
@@ -168,26 +186,25 @@ function AetheriteSystem.setPriority(player, skillId, newPriority)
 
         data[currentSkillAtPriority].priority = oldPriority
         data[skillId].priority = newPriority
+        
+        AetheriteSystem.savePlayer(player)
     end
 end
 
 -- CRAFTING ENGINE
 function AetheriteSystem.craftItem(player, recipeId)
     local recipe = AetheriteRecipes.items[recipeId]
-    if not recipe then return false, "Receita no encontrada." end
-
-    -- Vocation Check (Simplified for Universal)
-    -- As requested by USER, anyone can craft everything.
+    if not recipe then return false, "Receita não encontrada." end
 
     -- Cost Check (Gold)
     if not player:removeMoney(recipe.gold) then
-        return false, "Voc no tem ouro suficiente (Necessrio: " .. recipe.gold .. ")."
+        return false, "Você não tem ouro suficiente (Necessário: " .. recipe.gold .. ")."
     end
 
     -- Material Check
     for _, ing in ipairs(recipe.ingredients) do
         if player:getItemCount(ing.id) < ing.count then
-            return false, "Voc no tem todos os materiais necessrios."
+            return false, "Você não tem todos os materiais necessários."
         end
     end
 
@@ -196,7 +213,7 @@ function AetheriteSystem.craftItem(player, recipeId)
     if recipe.baseItemId and recipe.baseItemId > 0 then
         baseItem = player:getItemById(recipe.baseItemId, true)
         if not baseItem then
-            return false, "Voc precisa do item base para este upgrade."
+            return false, "Você precisa do item base para este upgrade."
         end
     end
 
@@ -238,8 +255,13 @@ end
 
 -- UI DATA EXPORTER
 function AetheriteSystem.getSkillData(player, skillId)
-    local data = AetheriteSystem.playersData[player:getGuid()]
-    if not data then return {} end
+    local guid = player:getGuid()
+    local data = AetheriteSystem.playerData[guid]
+    if not data then 
+        AetheriteSystem.loadPlayer(player)
+        data = AetheriteSystem.playerData[guid]
+    end
+    
     local skill = data[skillId]
     return {
         id = skillId,
