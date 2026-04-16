@@ -63,6 +63,19 @@ event.onDropLoot = function(self, corpse)
 				sendLootMessage(player, text)
 			end
 		end
+
+		-- Aetherite Mastery: Rare Loot Injection
+		local monsterExp = mType:getExperience()
+		if monsterExp >= 1000 then
+			local chance = 3 -- 3% chance
+			if math.random(1, 100) <= chance then
+				corpse:addItem(2150, 1) -- RAW_AETHERITE_ID
+				if player then
+					AetheriteSystem.addXP(player, AetheriteSystem.SKILL_COLETA, 25)
+					player:sendTextMessage(MESSAGE_EVENT_ADVANCE, "Voc encontrou uma Aetherita Bruta no corpo!")
+				end
+			end
+		end
 	else
 		local text = ("Loot of %s: nothing (due to low stamina)"):format(
 			             mType:getNameDescription())

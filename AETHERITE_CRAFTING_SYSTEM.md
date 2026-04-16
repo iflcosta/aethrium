@@ -42,10 +42,10 @@ Os jogadores escolhem a ordem de aprendizado (1ª, 2ª e 3ª Prioridade).
 
 O Crafting é focado exclusivamente em itens End-Game, divididos por vocação.
 
-### Regras de Progressão
-- **Tier 1 (Épico)**: Requer um item **Super Raro Padrão** (ex: MPA, Golden Helmet) + Aetherita Sólida.
-- **Tier 2 (Lendário)**: Requer o **Item Tier 1** da mesma categoria + Aetherita Sólida.
-- **Tier 3 (Eterno)**: Requer o **Item Tier 2** + Aetherita Sólida + **Catalisador da Store** (Item Pago).
+### Regras de Progressão e Custos
+- **Tier 1 (Épico)**: Requer um item **Super Raro Padrão** (ex: Falcon/Cobra/Lion) + 25 Aetherita Sólida + **1kk Gold**.
+- **Tier 2 (Lendário)**: Requer o **Item Tier 1** da mesma categoria + 50 Aetherita Sólida + **5kk Gold**.
+- **Tier 3 (Eterno)**: Requer o **Item Tier 2** + 100 Aetherita Sólida + **Catalisador da Store** (Aetherite Essence) + **10kk Gold**.
 
 ### Distribuição por Especialidade
 - **Knight**: Set Completo (Helm, Armor, Legs, Boots, Shield) + 3 Armas 1-Mão + 3 Armas 2-Mão.

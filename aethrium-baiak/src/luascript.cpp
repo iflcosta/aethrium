@@ -1874,6 +1874,8 @@ void LuaScriptInterface::registerFunctions()
 	registerEnum(ITEM_ATTRIBUTE_ATTACK_SPEED);
 	registerEnum(ITEM_ATTRIBUTE_CLASSIFICATION);
 	registerEnum(ITEM_ATTRIBUTE_TIER);
+	registerEnum(ITEM_ATTRIBUTE_CRAFTED);
+	registerEnum(ITEM_ATTRIBUTE_MASTERWORKED);
 	registerEnum(ITEM_ATTRIBUTE_REWARDID);
 	registerEnum(ITEM_ATTRIBUTE_DURATION_MIN);
 	// registerEnum(ITEM_ATTRIBUTE_DURATION_MAX); // Removed due to overflow

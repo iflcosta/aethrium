@@ -1,6 +1,7 @@
 local OPCODE_LANGUAGE    = 1
 local OPCODE_BATTLEPASS  = 150
 local OPCODE_INSTANCES   = 151
+local OPCODE_CRAFTING    = 152
 
 local extendedOpcode = CreatureEvent("ExtendedOpcode")
 function extendedOpcode.onExtendedOpcode(player, opcode, buffer)
@@ -24,6 +25,65 @@ function extendedOpcode.onExtendedOpcode(player, opcode, buffer)
             local track = data.track
             if tier and (track == "free" or track == "elite") then
                 BattlePass.claimReward(player, tier, track)
+            end
+        end
+
+    elseif opcode == OPCODE_CRAFTING then
+        local ok, data = pcall(json.decode, buffer)
+        if not ok or type(data) ~= "table" then
+            print(string.format("[Crafting] Bad JSON from %s: %s", player:getName(), tostring(buffer)))
+            return true
+        end
+
+        local action = data.action
+        if action == "open_request" then
+            local payload = {
+                action = "open",
+                dust = AetheriteSystem.getDust(player),
+                skills = {
+                    coleta = AetheriteSystem.getSkillData(player, AetheriteSystem.SKILL_COLETA),
+                    refino = AetheriteSystem.getSkillData(player, AetheriteSystem.SKILL_REFINO),
+                    crafting = AetheriteSystem.getSkillData(player, AetheriteSystem.SKILL_CRAFTING)
+                },
+                recipes = AetheriteRecipes.getAll()
+            }
+            player:sendExtendedOpcode(OPCODE_CRAFTING, json.encode(payload))
+
+        elseif action == "change_focus" then
+            local skillId = tonumber(data.skillId)
+            local priority = tonumber(data.priority)
+            if skillId and priority then
+                AetheriteSystem.setPriority(player, skillId, priority)
+                -- Send update back
+                player:sendExtendedOpcode(OPCODE_CRAFTING, json.encode({ 
+                    action = "update_skills", 
+                    skills = {
+                        coleta = AetheriteSystem.getSkillData(player, AetheriteSystem.SKILL_COLETA),
+                        refino = AetheriteSystem.getSkillData(player, AetheriteSystem.SKILL_REFINO),
+                        crafting = AetheriteSystem.getSkillData(player, AetheriteSystem.SKILL_CRAFTING)
+                    }
+                }))
+            end
+
+        elseif action == "craft" then
+            local recipeId = tonumber(data.recipeId)
+            if recipeId then
+                local success, message = AetheriteSystem.craftItem(player, recipeId)
+                if not success then
+                    player:sendExtendedOpcode(OPCODE_CRAFTING, json.encode({ action = "error", message = message }))
+                else
+                    -- Send full update back
+                    local payload = {
+                        action = "open",
+                        dust = AetheriteSystem.getDust(player),
+                        skills = {
+                            coleta = AetheriteSystem.getSkillData(player, AetheriteSystem.SKILL_COLETA),
+                            refino = AetheriteSystem.getSkillData(player, AetheriteSystem.SKILL_REFINO),
+                            crafting = AetheriteSystem.getSkillData(player, AetheriteSystem.SKILL_CRAFTING)
+                        }
+                    }
+                    player:sendExtendedOpcode(OPCODE_CRAFTING, json.encode(payload))
+                end
             end
         end
 

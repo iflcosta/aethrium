@@ -5,6 +5,20 @@ event.onLook = function(self, thing, position, distance, description)
 	if thing:isItem() then
 		description = description .. thing:getDescription(distance)
 		
+		-- Aetherite Mastery: Masterworked
+		if thing:getAttribute(ITEM_ATTRIBUTE_MASTERWORKED) > 0 then
+			description = description .. "\nEste item é uma Obra Maestra (Masterworked) e fornece +15% de sucesso na Forja Exaltada e um 4º Slot de Imbuement."
+		end
+
+		-- Aetherite Mastery: Crafted
+		if thing:getAttribute(ITEM_ATTRIBUTE_CRAFTED) > 0 then
+			local writer = thing:getAttribute(ITEM_ATTRIBUTE_WRITER)
+			if writer ~= "" then
+				description = description .. "\nCriado com maestria por " .. writer .. "."
+			else
+				description = description .. "\nCriado através da Forja de Aetherita."
+			end
+		end
 	else
 		description = description .. thing:getDescription(distance)
 	end
