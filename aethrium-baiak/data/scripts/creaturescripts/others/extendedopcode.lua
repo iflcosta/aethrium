@@ -3,6 +3,9 @@ local OPCODE_BATTLEPASS  = 150
 local OPCODE_INSTANCES   = 151
 local OPCODE_CRAFTING    = 152
 
+-- Load Aetherite System
+dofile("data/lib/core/aetherite_lib.lua")
+
 local extendedOpcode = CreatureEvent("ExtendedOpcode")
 function extendedOpcode.onExtendedOpcode(player, opcode, buffer)
     if opcode == OPCODE_LANGUAGE then
@@ -138,6 +141,7 @@ extendedOpcode:register()
 
 local login = CreatureEvent("ExtendedOpcodeLogin")
 function login.onLogin(player)
+    AetheriteSystem.loadPlayer(player)
     player:registerEvent("ExtendedOpcode")
     return true
 end
